@@ -76,6 +76,9 @@ cat > "${PACKAGE_DIR}/profile.json" <<EOF
 EOF
 
 mkdir -p "$OUTPUT_DIR"
+# Resolve to an absolute path so the tar below (run after cd into the temp
+# package dir) writes to the intended output location.
+OUTPUT_DIR="$(cd "$OUTPUT_DIR" && pwd)"
 WCP_PATH="${OUTPUT_DIR}/${FULL_VERSION_NAME}.wcp"
 
 (
