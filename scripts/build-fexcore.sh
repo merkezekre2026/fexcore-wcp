@@ -18,6 +18,11 @@ if [[ ! -d "$FEX_SRC" ]]; then
   exit 1
 fi
 
+# Resolve to absolute paths so nested `cd` into build dirs stays correct.
+FEX_SRC="$(cd "$FEX_SRC" && pwd)"
+mkdir -p "$OUTPUT_ROOT"
+OUTPUT_ROOT="$(cd "$OUTPUT_ROOT" && pwd)"
+
 if ! command -v ninja >/dev/null 2>&1; then
   echo "error: ninja is required" >&2
   exit 1
@@ -61,9 +66,6 @@ build_arch() {
   ninja
   DESTDIR="$dest" ninja install
 }
-
-mkdir -p "$OUTPUT_ROOT"
-cd "$OUTPUT_ROOT"
 
 build_arch "arm64ec" "${OUTPUT_ROOT}/stage-ec"
 build_arch "aarch64" "${OUTPUT_ROOT}/stage-wo"
