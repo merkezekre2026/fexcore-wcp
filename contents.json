@@ -1,1 +1,8 @@
-[]
+[
+  {
+    "type": "FEXCore",
+    "verName": "FEXCore-2607-1d695f6db",
+    "verCode": "0",
+    "remoteUrl": "https://github.com/merkezekre2026/fexcore-wcp/releases/download/fex-nightly-2607-1d695f6db/FEXCore-2607-1d695f6db.wcp"
+  }
+]
