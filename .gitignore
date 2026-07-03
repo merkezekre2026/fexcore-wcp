@@ -1,0 +1,15 @@
+# FEX upstream checkout
+src/
+
+# Build artifacts
+build-*/
+stage-*/
+final_package/
+*.wcp
+
+# Cache
+.ccache/
+
+# Python
+__pycache__/
+*.pyc

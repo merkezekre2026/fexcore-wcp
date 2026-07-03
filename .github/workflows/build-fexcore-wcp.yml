@@ -1,0 +1,248 @@
+name: Build FEXCore WCP
+
+on:
+  schedule:
+    - cron: "14 3 * * *"
+  workflow_dispatch:
+    inputs:
+      cleanup_old_releases:
+        description: "Delete nightly releases beyond the retention limit"
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fexcore-wcp-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  LLVM_MINGW_TAG: "20251104"
+  NIGHTLY_RETENTION: 8
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Checkout FEX
+        uses: actions/checkout@v4
+        with:
+          repository: FEX-Emu/FEX
+          submodules: recursive
+          fetch-depth: 0
+          path: src
+
+      - name: Check for updates
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd src
+          SHORT_HASH="$(git rev-parse --short HEAD)"
+          FULL_HASH="$(git rev-parse HEAD)"
+
+          echo "UPSTREAM_HASH=${FULL_HASH}" >> "$GITHUB_ENV"
+          echo "SHORT_HASH=${SHORT_HASH}" >> "$GITHUB_ENV"
+
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "SHOULD_BUILD=true" >> "$GITHUB_ENV"
+            exit 0
+          fi
+
+          if gh release list --repo "${{ github.repository }}" --limit 200 \
+            | grep -q -- "-${SHORT_HASH}"; then
+            echo "No new upstream commit (${SHORT_HASH}); skipping build."
+            echo "SHOULD_BUILD=false" >> "$GITHUB_ENV"
+          else
+            echo "SHOULD_BUILD=true" >> "$GITHUB_ENV"
+          fi
+
+      - name: Install dependencies
+        if: env.SHOULD_BUILD == 'true'
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends \
+            ca-certificates curl xz-utils jq git \
+            build-essential python3 python3-venv python3-pip \
+            pkg-config cmake ninja-build zstd dos2unix perl tar unzip \
+            llvm crossbuild-essential-arm64 ccache
+
+      - name: Cache llvm-mingw
+        if: env.SHOULD_BUILD == 'true'
+        id: cache-llvm-mingw
+        uses: actions/cache@v4
+        with:
+          path: /opt/llvm-mingw
+          key: llvm-mingw-${{ env.LLVM_MINGW_TAG }}
+
+      - name: Setup llvm-mingw toolchain
+        if: env.SHOULD_BUILD == 'true' && steps.cache-llvm-mingw.outputs.cache-hit != 'true'
+        run: |
+          TOOLCHAIN_DIR="/opt/llvm-mingw"
+          wget -q \
+            "https://github.com/mstorsjo/llvm-mingw/releases/download/${LLVM_MINGW_TAG}/llvm-mingw-${LLVM_MINGW_TAG}-ucrt-ubuntu-22.04-x86_64.tar.xz" \
+            -O llvm.tar.xz
+
+          sudo rm -rf "$TOOLCHAIN_DIR"
+          sudo mkdir -p "$TOOLCHAIN_DIR"
+          sudo tar -C "$TOOLCHAIN_DIR" --strip-components=1 -xJf llvm.tar.xz
+          rm llvm.tar.xz
+
+      - name: Set PATH
+        if: env.SHOULD_BUILD == 'true'
+        run: echo "/opt/llvm-mingw/bin" >> "$GITHUB_PATH"
+
+      - name: Setup ccache
+        if: env.SHOULD_BUILD == 'true'
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-fexcore-${{ env.UPSTREAM_HASH }}
+          restore-keys: |
+            ccache-fexcore-
+
+      - name: Configure ccache
+        if: env.SHOULD_BUILD == 'true'
+        run: |
+          mkdir -p .ccache
+          echo "CCACHE_DIR=$PWD/.ccache" >> "$GITHUB_ENV"
+          echo "CCACHE_COMPRESS=1" >> "$GITHUB_ENV"
+          echo "CCACHE_MAXSIZE=500M" >> "$GITHUB_ENV"
+
+      - name: Generate version name
+        if: env.SHOULD_BUILD == 'true'
+        run: |
+          git config --global --add safe.directory '*'
+          cd src
+          git fetch --tags --force
+
+          LATEST_TAG="$(git describe --tags --abbrev=0 2>/dev/null || echo "Unknown")"
+          CLEAN_TAG="$(echo "$LATEST_TAG" | sed 's/^FEX-//')"
+          COMMIT_HASH="$(git rev-parse --short HEAD)"
+          VERSION_NAME="${CLEAN_TAG}-${COMMIT_HASH}"
+
+          echo "VERSION_NAME=${VERSION_NAME}" >> "$GITHUB_ENV"
+          echo "COMMIT_HASH=${COMMIT_HASH}" >> "$GITHUB_ENV"
+          echo "RELEASE_TAG=fex-nightly-${VERSION_NAME}" >> "$GITHUB_ENV"
+          echo "WCP_NAME=FEXCore-${VERSION_NAME}.wcp" >> "$GITHUB_ENV"
+
+      - name: Build FEXCore
+        if: env.SHOULD_BUILD == 'true'
+        run: bash scripts/build-fexcore.sh src build-output
+
+      - name: Show ccache stats
+        if: env.SHOULD_BUILD == 'true'
+        run: ccache -s || true
+
+      - name: Package WCP
+        if: env.SHOULD_BUILD == 'true'
+        env:
+          LLVM_STRIP: /opt/llvm-mingw/bin/llvm-strip
+        run: |
+          bash scripts/package-wcp.sh \
+            build-output/stage-ec \
+            build-output/stage-wo \
+            "${VERSION_NAME}" \
+            dist
+
+      - name: Validate WCP archive
+        if: env.SHOULD_BUILD == 'true'
+        run: |
+          tar -tf "dist/${WCP_NAME}" | tee /tmp/wcp-contents.txt
+          grep -q '^profile.json$' /tmp/wcp-contents.txt
+          grep -q '^system32/libarm64ecfex.dll$' /tmp/wcp-contents.txt
+          grep -q '^system32/libwow64fex.dll$' /tmp/wcp-contents.txt
+          tar -xOf "dist/${WCP_NAME}" profile.json | python3 -m json.tool >/dev/null
+
+      - name: Upload artifact
+        if: env.SHOULD_BUILD == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: fexcore-wcp
+          path: dist/*.wcp
+
+      - name: Create release
+        if: env.SHOULD_BUILD == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          files: dist/*.wcp
+          name: FEXCore Nightly ${{ env.VERSION_NAME }}
+          body: |
+            Automated nightly build of FEXCore for Winlator Bionic.
+
+            - Upstream commit: https://github.com/FEX-Emu/FEX/commit/${{ env.UPSTREAM_HASH }}
+            - Package: `${{ env.WCP_NAME }}`
+            - Install via Winlator **Settings -> Install Content**, or add this repo's `contents.json` raw URL under **Downloadable Content URL**.
+
+      - name: Update contents.json
+        if: env.SHOULD_BUILD == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          DOWNLOAD_URL="https://github.com/${{ github.repository }}/releases/download/${RELEASE_TAG}/${WCP_NAME}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          n=0
+          until [ "$n" -ge 5 ]; do
+            git pull --rebase origin "${GITHUB_REF_NAME}"
+
+            python3 scripts/update-contents-json.py \
+              --contents contents.json \
+              --version-name "${VERSION_NAME}" \
+              --remote-url "${DOWNLOAD_URL}"
+
+            if git diff --quiet contents.json; then
+              echo "contents.json already up to date"
+              exit 0
+            fi
+
+            git add contents.json
+            git commit -m "Update contents.json for FEXCore ${VERSION_NAME} [skip ci]"
+
+            if git push origin "HEAD:${GITHUB_REF_NAME}"; then
+              exit 0
+            fi
+
+            n=$((n + 1))
+            sleep 15
+          done
+
+          echo "Failed to push contents.json after retries" >&2
+          exit 1
+
+      - name: Cleanup old nightly releases
+        if: >-
+          env.SHOULD_BUILD == 'true' &&
+          (
+            github.event_name == 'schedule' ||
+            (
+              github.event_name == 'workflow_dispatch' &&
+              inputs.cleanup_old_releases == true
+            )
+          )
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          OLD_RELEASES="$(
+            gh release list --repo "${{ github.repository }}" --limit 500 \
+              --json tagName,createdAt \
+              --jq '[.[] | select(.tagName | startswith("fex-nightly-"))] | sort_by(.createdAt) | reverse | .[].tagName' \
+              | tail -n +$((NIGHTLY_RETENTION + 1))
+          )"
+
+          for TAG in $OLD_RELEASES; do
+            echo "Deleting old release: ${TAG}"
+            gh release delete "$TAG" --repo "${{ github.repository }}" --cleanup-tag -y || true
+            sleep 2
+          done
