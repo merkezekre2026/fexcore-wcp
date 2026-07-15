@@ -1,6 +1,12 @@
 [
   {
     "type": "FEXCore",
+    "verName": "FEXCore-2607-30f2a7b23",
+    "verCode": "0",
+    "remoteUrl": "https://github.com/merkezekre2026/fexcore-wcp/releases/download/fex-nightly-2607-30f2a7b23/FEXCore-2607-30f2a7b23.wcp"
+  },
+  {
+    "type": "FEXCore",
     "verName": "FEXCore-2607-12e8cf008",
     "verCode": "0",
     "remoteUrl": "https://github.com/merkezekre2026/fexcore-wcp/releases/download/fex-nightly-2607-12e8cf008/FEXCore-2607-12e8cf008.wcp"
